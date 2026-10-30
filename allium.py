@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allium v2.6 PRO - dark web onion discovery engine.
+"""Allium v2.7 PRO - dark web onion discovery engine.
 
 Menu-driven (numbered options, multi-select, custom keywords).
 Hunts .onion links across public directories + LIVE Tor search
@@ -18,6 +18,7 @@ Usage:
 """
 import csv
 import html as htmlmod
+import ipaddress
 import json
 import os
 import re
@@ -32,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 
-VERSION = "v2.6 PRO"
+VERSION = "v2.7 PRO"
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) research-bot"}
 
 # ---------------------------------------------------------------- Pro UI
@@ -99,6 +100,23 @@ def stamp():
 # ---------------------------------------------------------------- patterns
 ONION_RE = re.compile(r"\b([a-z2-7]{56})\.onion\b")
 ONION_FULL_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
+
+# Hardening (v2.7): remote page titles can carry &#27; (ESC) via
+# html.unescape() -> ANSI/OSC terminal injection (fake output,
+# hidden lines, OSC 52 clipboard overwrite on some terminals).
+# Strip ALL control chars from remote-sourced display strings.
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _clean(s):
+    """Strip terminal control characters from remote-sourced text."""
+    return _CTRL_RE.sub("", s or "")
+
+
+def _csv_cell(s):
+    """Neutralize CSV formula injection (=, +, -, @ prefixes)."""
+    s = str(s)
+    return "'" + s if s[:1] in ("=", "+", "-", "@") else s
 DEAD_RE = re.compile(r"\[(offline|dead|seized)", re.I)
 TIMEOUT = 25
 HEAD_LIMIT = 150_000
@@ -232,7 +250,7 @@ def socks5_connect(host, port, timeout=TIMEOUT):
 
 
 def dechunk(data):
-    out, i = b"", 0
+    parts, i = [], 0
     while True:
         j = data.find(b"\r\n", i)
         if j < 0:
@@ -244,9 +262,9 @@ def dechunk(data):
         if size == 0:
             break
         i = j + 2
-        out += data[i:i + size]
+        parts.append(data[i:i + size])
         i += size + 2
-    return out or data
+    return b"".join(parts) or data
 
 
 def fetch_tor(url, limit=None, redirs=3):
@@ -276,11 +294,18 @@ def fetch_tor(url, limit=None, redirs=3):
         if u.scheme == "https":
             s = ssl.create_default_context().wrap_socket(
                 s, server_hostname=host)
-        s.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+        # Functional fix: Host header must carry non-default ports.
+        host_hdr = host if port in (80, 443) else f"{host}:{port}"
+        s.sendall(f"GET {path} HTTP/1.1\r\nHost: {host_hdr}\r\n"
                   f"User-Agent: {UA['User-Agent']}\r\n"
                   f"Connection: close\r\n\r\n".encode())
+        # Hardening: overall deadline - a slow-drip hostile server
+        # must not hold a worker forever (per-recv timeouts reset).
+        deadline = time.monotonic() + TIMEOUT * 2
         data = b""
         while True:
+            if time.monotonic() > deadline:
+                raise OSError("tor: deadline exceeded")
             chunk = s.recv(65536)
             if not chunk:
                 break
@@ -298,7 +323,7 @@ def fetch_tor(url, limit=None, redirs=3):
             lm = re.search(rb"(?m)^location:\s*(\S+)", head)
             if lm:
                 loc = urllib.parse.urljoin(
-                    url, lm.group(1).decode("utf-8", "errors").strip())
+                    url, lm.group(1).decode("utf-8", "replace").strip())
                 if urllib.parse.urlsplit(loc).scheme not in (
                         "http", "https"):
                     raise OSError("tor: bad redirect scheme")
@@ -316,12 +341,35 @@ def fetch_tor(url, limit=None, redirs=3):
 # ------------------------------------------------- clearnet HTTP layer
 # Audit F2: urllib follows redirects to ANY scheme (file:// included).
 # This opener only permits http/https redirects.
+# v2.7: also blocks redirects to private/loopback/link-local IPs
+# (compromised directory -> SSRF against your LAN via your machine).
+def _host_is_public(host):
+    """True only if every resolved IP is globally routable."""
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    addrs = set()
+    for fam, _, _, _, sa in infos:
+        try:
+            addrs.add(ipaddress.ip_address(sa[0]))
+        except ValueError:
+            return False
+    return bool(addrs) and all(ip.is_global for ip in addrs)
+
+
 class _HttpOnlyRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        scheme = urllib.parse.urlsplit(newurl).scheme
-        if scheme not in ("http", "https"):
-            raise OSError(f"blocked redirect to {scheme or 'unknown'} scheme")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        u = urllib.parse.urlsplit(urllib.parse.urljoin(req.full_url,
+                                                       newurl))
+        if u.scheme not in ("http", "https"):
+            raise OSError(f"blocked redirect to {u.scheme or 'unknown'} "
+                          "scheme")
+        host = u.hostname or ""
+        if host and not _host_is_public(host):
+            raise OSError(f"blocked redirect to non-public host {host}")
+        return super().redirect_request(req, fp, code, msg, headers,
+                                        newurl)
 
 
 _URL_OPENER = urllib.request.build_opener(_HttpOnlyRedirect)
@@ -341,27 +389,27 @@ def _read_capped(resp, cap=MAX_BODY):
 def fetch(url):
     if USE_TOR:
         try:
-            return fetch_tor(url).decode("utf-8", "errors")
+            return fetch_tor(url).decode("utf-8", "replace")
         except OSError:
             global TOR_FAILS
             TOR_FAILS += 1
             raise
     req = urllib.request.Request(url, headers=UA)
     with _URL_OPENER.open(req, timeout=TIMEOUT) as r:
-        return _read_capped(r).decode("utf-8", "errors")
+        return _read_capped(r).decode("utf-8", "replace")
 
 
 def fetch_head(url, limit=HEAD_LIMIT):
     if USE_TOR:
         try:
-            return fetch_tor(url, limit).decode("utf-8", "errors")
+            return fetch_tor(url, limit).decode("utf-8", "replace")
         except OSError:
             global TOR_FAILS
             TOR_FAILS += 1
             raise
     req = urllib.request.Request(url, headers=UA)
     with _URL_OPENER.open(req, timeout=TIMEOUT) as r:
-        return r.read(limit).decode("utf-8", "errors")
+        return r.read(limit).decode("utf-8", "replace")
 
 
 def find_onions(text):
@@ -434,7 +482,11 @@ def parse_engine_blocks(html, cap=250):
     <li class="result"><h4><a>TITLE</a></h4><p>desc</p>
     <cite>xxx.onion</cite><span class="lastSeen" data-timestamp="...">
     Returns [(title, onion-with-http, last_seen)].
+
+    v2.7: page truncated to 2MB before regex - a hostile 10MB page
+    without </li> closers could otherwise make matching quadratic.
     """
+    html = html[:2_000_000]
     out = []
     for m in re.finditer(r'<li class="result">(.*?)</li>', html, re.S):
         if len(out) >= cap:
@@ -817,6 +869,28 @@ def check_clearnet(url, timeout=12):
         return False
 
 
+def check_via_tor(url):
+    """v2.7 CRITICAL FIX: health probe through Tor when stealth is on.
+    The old code probed 6 clearnet sites via plain urllib even with
+    USE_TOR=True - leaking the real IP at startup right after telling
+    the user 'your IP stays hidden'."""
+    try:
+        fetch_tor(url, limit=1024)
+        return True
+    except Exception:
+        return False
+
+
+def verify_tor():
+    """v2.7: confirm the SOCKS proxy is really Tor (not SSH -D / VPN).
+    tor_available() only checks the port is open."""
+    try:
+        data = fetch_tor("https://check.torproject.org/api/ip", limit=4096)
+        return json.loads(data).get("IsTor") is True
+    except Exception:
+        return False
+
+
 def source_health():
     """Startup probe: how many live sources respond. Source identities
     are never shown - only the count."""
@@ -824,8 +898,9 @@ def source_health():
     targets = ["https://dark.fail/", "https://onion.live/",
                "https://tor.taxi/", "https://ransomware.live/",
                "https://ahmia.fi/", "https://torch.cx/"]
+    probe = check_via_tor if USE_TOR else check_clearnet
     with ThreadPoolExecutor(max_workers=6) as ex:
-        results = list(ex.map(check_clearnet, targets))
+        results = list(ex.map(probe, targets))
     n = sum(1 for r in results if r)
     if n == len(targets):
         pill = paint("● ALL LIVE ", GREEN, BOLD)
@@ -1210,6 +1285,7 @@ def merge(rows):
     """rows: (name, onion, source, label, cats, why) -> ranked dicts."""
     merged = {}
     for name, onion, src, label, cats, why in rows:
+        name = _clean(name)  # v2.7: remote titles -> terminal injection
         m = merged.setdefault(onion, {"name": name, "onion": onion,
                                       "sources": set(), "labels": set(),
                                       "cats": set(), "why": set()})
@@ -1296,21 +1372,29 @@ def export(rows, descs, label):
         w.writerow(["name", "onion", "source_count", "score",
                     "matched_categories", "matched_keywords", "about"])
         for r in rows:
-            w.writerow([r["name"], r["onion"], len(r["sources"]),
-                        r["score"], ";".join(r["cats"]), ";".join(r["why"]),
-                        describe(r, descs)])
+            # v2.7: _csv_cell neutralizes Excel formula injection.
+            w.writerow([_csv_cell(r["name"]), r["onion"],
+                        len(r["sources"]), r["score"],
+                        _csv_cell(";".join(r["cats"])),
+                        _csv_cell(";".join(r["why"])),
+                        _csv_cell(describe(r, descs))])
     with open(base + ".txt", "w", encoding="utf-8") as f:
         f.write("\n".join(r["onion"] for r in rows) + "\n")
+
+    def _md(s):
+        # v2.7: escape pipes so hostile titles can't break the table.
+        return str(s).replace("|", "\\|").replace("\n", " ")
+
     with open(base + ".md", "w", encoding="utf-8") as f:
         f.write(f"# Allium {VERSION} - {label}\n\n"
                 f"Total: **{len(rows)}** unique v3 onions\n\n"
                 "| # | Name | Onion | Score | Srcs | Why matched | About |\n"
                 "|---|---|---|---|---|---|---|\n")
         for i, r in enumerate(rows, 1):
-            f.write(f"| {i} | {r['name']} | `{r['onion']}` | {r['score']} | "
-                    f"{len(r['sources'])} | "
-                    f"{', '.join(r['why']) or '-'} | "
-                    f"{describe(r, descs)} |\n")
+            f.write(f"| {i} | {_md(r['name'])} | `{r['onion']}` | "
+                    f"{r['score']} | {len(r['sources'])} | "
+                    f"{_md(', '.join(r['why'])) or '-'} | "
+                    f"{_md(describe(r, descs))} |\n")
     print(paint(f"\n  [+] Exported -> {base}.{{json,csv,txt,md}}",
                 GREEN, BOLD))
 
@@ -1437,8 +1521,16 @@ def toggle_stealth():
         return
     if tor_available():
         USE_TOR = True
-        print(paint("\n  [+] Stealth ON - all traffic via Tor, "
-                    "your IP stays hidden", GREEN, BOLD))
+        # v2.7: confirm it is really Tor, not some other SOCKS proxy.
+        if verify_tor():
+            print(paint("\n  [+] Stealth ON - Tor verified, all traffic "
+                        "via Tor, your IP stays hidden", GREEN, BOLD))
+        else:
+            print(paint("\n  [!] Stealth ON - proxy NOT confirmed as Tor "
+                        "(could be SSH -D / VPN).\n"
+                        "      Traffic goes through the proxy (IP hidden "
+                        "from sites), but Tor is UNCONFIRMED.",
+                        YELLOW, BOLD))
     else:
         print(paint("\n  [!] Tor not found (127.0.0.1:9050/9150).\n"
                     "      Open Tor Browser or start the Tor service first.\n"
@@ -1543,9 +1635,18 @@ def main():
                 "PGP-signed lists.", YELLOW))
     if tor_available():
         USE_TOR = True
-        print(paint(f"  [+] Tor detected (127.0.0.1:{TOR_PORT}) - "
-                    "STEALTH MODE auto-ON: your IP stays hidden.",
-                    GREEN, BOLD))
+        # v2.7: confirm it is really Tor, not some other SOCKS proxy.
+        if verify_tor():
+            print(paint(f"  [+] Tor verified (127.0.0.1:{TOR_PORT}) - "
+                        "STEALTH MODE auto-ON: your IP stays hidden.",
+                        GREEN, BOLD))
+        else:
+            print(paint(f"  [!] Proxy on 127.0.0.1:{TOR_PORT} is NOT "
+                        "confirmed as Tor (could be SSH -D / VPN).\n"
+                        "      Traffic still goes through the proxy "
+                        "(IP hidden from sites),\n"
+                        "      but Tor itself is UNCONFIRMED.",
+                        YELLOW, BOLD))
     else:
         print(paint("  [*] Tor not running - onion-only engines need "
                     "stealth [9].", YELLOW))

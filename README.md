@@ -1,4 +1,15 @@
-# 🧅 Allium v2.6 PRO
+<p align="center">
+  <img src="allium-logo.png" width="300" alt="Allium — peel the dark web, layer by layer">
+</p>
+
+# 🧅 Allium v2.7 PRO
+
+![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)
+![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
+
+<p align="center"><i>peel the dark web, layer by layer</i></p>
 
 **Dark web onion discovery engine** — menu-driven, zero dependencies, zero typing.
 Built by [Karan Soni](https://github.com/karansoni0x).
@@ -65,16 +76,54 @@ sits at the top; the megabytes of victim posts below are skipped.
 400+ groups scanned in under a minute, from the clearnet, no Tor needed
 for discovery.
 
+## Requirements
+
+- **Python 3.8+** — the only hard requirement. No `pip install`, no
+  virtualenv, no third-party packages: the tool is pure Python stdlib.
+- **Git** — only to clone the repo (or download the ZIP instead).
+- **Tor** (optional) — enables Stealth mode + all 25 onion-only search
+  engines. Without Tor, every clearnet source still works fully.
+
 ## Install
 
+**Windows** (Command Prompt or PowerShell):
+
+```cmd
+git clone https://github.com/karansoni0x/allium.git
+cd allium
+py allium.py
+```
+
+No Python yet? Install from [python.org](https://www.python.org/downloads/)
+(tick **"Add python.exe to PATH"** during setup) or the Microsoft Store,
+then verify:
+
+```cmd
+py --version
+```
+
+Must show 3.8 or higher.
+
+**Linux** (Debian / Ubuntu):
+
 ```bash
+sudo apt update && sudo apt install -y python3 git
 git clone https://github.com/karansoni0x/allium.git
 cd allium
 python3 allium.py
 ```
 
-No `pip install`. No virtualenv. Python 3.8+ is all you need. Works on
-Windows, Linux and macOS.
+**Tor — optional, for Stealth mode:**
+
+- Easiest: install [Tor Browser](https://www.torproject.org/download/)
+  and keep it open — Allium auto-detects it on port 9150.
+- Or run system Tor: `sudo apt install -y tor` (Linux, port 9050).
+  On Windows the
+  [Tor Expert Bundle](https://www.torproject.org/download/tor/)
+  does the same job.
+
+No Tor? No problem — the tool runs fine on clearnet sources, it just
+tells you stealth is off.
 
 ## Usage
 
@@ -219,7 +268,36 @@ Honest note: Tor hides your IP from sites, but no script can promise
   header, footer, and `[G]` menu entry — plain URL fallback where
   hyperlinks aren't supported: https://github.com/karansoni0x
 
-## Security audit (deep VAPT pass, v2.5–v2.6)
+## Security audit (deep VAPT pass, v2.5–v2.7)
+
+### v2.7 — hostile-input hardening (external review)
+- **Stealth IP leak fixed (critical):** the startup health check used to
+  probe 6 clearnet sites via plain urllib even with stealth ON — leaking
+  the real IP right after promising "your IP stays hidden". Now probes
+  through Tor when stealth is on.
+- **Tor verified, not just detected:** the port check alone can't tell
+  Tor from any other SOCKS proxy (SSH `-D`, VPN). Now confirmed via
+  `check.torproject.org/api/ip` (`IsTor: true`); otherwise warns
+  "proxy NOT confirmed as Tor".
+- **Latent decode crash fixed:** `.decode("utf-8", "errors")` used an
+  invalid error-handler name — worked on clean pages, raised
+  `LookupError` on non-UTF-8 pages (e.g. cp1251 Russian forums),
+  silently dropping results. Now `"replace"`.
+- **Slow-drip DoS fixed:** overall request deadline in Tor fetches — a
+  hostile server can no longer hold a worker forever by trickling bytes.
+- **Terminal injection fixed:** remote titles are HTML-unescaped, so
+  `&#27;` became a real ESC char — hostile onions could inject
+  ANSI/OSC sequences (fake output, hidden lines, clipboard overwrite).
+  All control chars now stripped from remote-sourced names.
+- **CSV formula injection fixed:** cells starting with `= + - @` are
+  neutralized for Excel/LibreOffice; Markdown table pipes escaped.
+- **Redirect SSRF blocked:** clearnet redirects to private/loopback/
+  link-local IPs are now refused (resolved + checked via `ipaddress`).
+- **DoS hardening:** chunked decoder is now linear (list+join); engine
+  pages truncated to 2 MB before regex parsing.
+- **Host header:** non-default ports now included (functional fix).
+
+### v2.5 –v2.6 (original deep pass)
 
 - Header-injection guard: CR/LF rejected in Tor-mode URLs.
 - Redirects restricted to http/https only (Tor mode **and** clearnet —
