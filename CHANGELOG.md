@@ -1,5 +1,6 @@
 # Changelog
 
+<<<<<<< HEAD
 All notable changes to Allium are documented here. Version numbers match
 the GitHub releases exactly — what the release says is what the code does.
 
@@ -84,3 +85,20 @@ against the code, all real findings fixed):
 
 - 4 live directories + ransomware.live extraction (409 groups → 848 DLS
   onions), menu-driven, zero dependencies
+=======
+## [2.7.1] - 2026-11-06
+
+### Added
+- First public GitHub release
+- SECURITY.md with private vulnerability reporting
+- CONTRIBUTING.md with contribution guidelines
+
+## [2.7.0]
+
+- Live onion discovery across 31 live sources
+- Ransomware leak-site tracking via ransomware.live
+- Tor fail-closed stealth mode
+- Strict keyword filtering and corroboration-ranked results
+- 197-country guided flow
+- Export in JSON, Markdown, CSV and TXT
+>>>>>>> cc6c07196d9f45a40c9f11d1cfa7421eb1864066
