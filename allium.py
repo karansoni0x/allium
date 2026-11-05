@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allium v2.7 PRO - dark web onion discovery engine.
+"""Allium v2.7.1 - dark web onion discovery engine.
 
 Menu-driven (numbered options, multi-select, custom keywords).
 Hunts .onion links across public directories + LIVE Tor search
@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 
-VERSION = "v2.7 PRO"
+VERSION = "v2.7.1"
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) research-bot"}
 
 # ---------------------------------------------------------------- Pro UI
