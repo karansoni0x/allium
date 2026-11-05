@@ -1627,6 +1627,9 @@ def country_flow():
 
 def main():
     global USE_TOR
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
+        print(f"Allium {VERSION}")
+        return
     if not accept_disclaimer():
         return
     print(paint("\n  [!] Research / defensive OSINT only. Directories "

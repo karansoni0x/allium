@@ -3,6 +3,11 @@
 All notable changes to Allium are documented here. Version numbers match
 the GitHub releases exactly — what the release says is what the code does.
 
+## Unreleased
+
+- Add `--version` flag (`python3 allium.py --version` prints the version
+  and exits, no menu). Closes the Good First Issue.
+
 ## v2.7.1 — 2026-11-06
 
 Live onion discovery for OSINT and threat-intel research. Every source is
